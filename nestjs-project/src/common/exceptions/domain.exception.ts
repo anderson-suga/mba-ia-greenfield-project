@@ -54,3 +54,45 @@ export class StorageUnavailableException extends DomainException {
     super('STORAGE_UNAVAILABLE', 503, 'Object storage unavailable');
   }
 }
+
+export class VideoNotFoundException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_FOUND', 404, 'Video not found');
+  }
+}
+
+export class VideoForbiddenException extends DomainException {
+  constructor() {
+    super('VIDEO_FORBIDDEN', 403, 'You do not own this video');
+  }
+}
+
+export class VideoNotDraftException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_DRAFT', 409, 'Video is not in draft status');
+  }
+}
+
+export class VideoNotReadyException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_READY', 409, 'Video is not ready for playback');
+  }
+}
+
+export class UploadIncompleteException extends DomainException {
+  constructor() {
+    super('UPLOAD_INCOMPLETE', 422, 'Upload cannot be completed');
+  }
+}
+
+export class PayloadTooLargeException extends DomainException {
+  constructor() {
+    super('PAYLOAD_TOO_LARGE', 413, 'File exceeds 10GB limit');
+  }
+}
+
+export class UnsupportedMediaTypeException extends DomainException {
+  constructor() {
+    super('UNSUPPORTED_MEDIA_TYPE', 415, 'Media type not allowed');
+  }
+}

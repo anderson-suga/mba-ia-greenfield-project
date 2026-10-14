@@ -64,4 +64,15 @@ export class ChannelsService {
       );
     });
   }
+
+  /**
+   * Resolves the channel owned by a user, which is how every other module
+   * answers "which channel does this request act as". Returns `null` when the
+   * user has no channel — callers decide whether that is forbidden or a bug.
+   */
+  async findByUserId(userId: string): Promise<Channel | null> {
+    return this.dataSource.getRepository(Channel).findOneBy({
+      user_id: userId,
+    });
+  }
 }

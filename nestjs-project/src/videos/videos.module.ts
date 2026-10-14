@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import type { ConfigType } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import queueConfig from '../config/queue.config';
+import { ChannelsModule } from '../channels/channels.module';
 import { Video } from './entities/video.entity';
 import { VideoProcessingOutbox } from './queue/entities/video-processing-outbox.entity';
 import { VIDEO_PROCESSING_QUEUE } from './queue/video-processing.queue';
@@ -10,10 +11,13 @@ import { VideoProcessingOutboxRelay } from './queue/video-processing-outbox.rela
 import { VideoProcessingOutboxService } from './queue/video-processing-outbox.service';
 import { S3StorageService } from './storage/s3-storage.service';
 import { STORAGE_SERVICE } from './storage/storage.service';
+import { VideosController } from './videos.controller';
+import { VideosService } from './videos.service';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Video, VideoProcessingOutbox]),
+    ChannelsModule,
     BullModule.forRootAsync({
       inject: [queueConfig.KEY],
       useFactory: (config: ConfigType<typeof queueConfig>) => ({
@@ -22,7 +26,9 @@ import { STORAGE_SERVICE } from './storage/storage.service';
     }),
     BullModule.registerQueue({ name: VIDEO_PROCESSING_QUEUE }),
   ],
+  controllers: [VideosController],
   providers: [
+    VideosService,
     {
       provide: STORAGE_SERVICE,
       useClass: S3StorageService,
@@ -32,6 +38,7 @@ import { STORAGE_SERVICE } from './storage/storage.service';
   ],
   exports: [
     STORAGE_SERVICE,
+    VideosService,
     VideoProcessingOutboxService,
     VideoProcessingOutboxRelay,
   ],
