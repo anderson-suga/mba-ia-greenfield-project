@@ -32,9 +32,11 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    # Passive shell until the worker entrypoint exists; switched to
-    # `node dist/worker/main.js` when the worker lands.
-    command: tail -f /dev/null
+    # Dev runs the TypeScript entrypoint directly through ts-node, the same way
+    # the TypeORM CLI runs, so the bind-mounted source is used without a build
+    # step. The production image (Dockerfile.worker) runs the compiled
+    # `dist/worker/main.js`.
+    command: node --require ts-node/register src/worker/main.ts
 
   db:
     image: postgres:17

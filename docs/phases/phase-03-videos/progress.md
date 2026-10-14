@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 4/10 completed
+**SIs:** 6/10 completed
 
 ### SI-03.1 — Provision Storage, Queue, and Worker Infrastructure
 - **Status:** completed
@@ -51,9 +51,16 @@
   - `ChannelsService.findByUserId` was added so channel ownership stays in the channel module rather than videos reaching into the `channels` table.
 
 ### SI-03.6 — Implement the FFmpeg Worker
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 25 passing (video-processing.processor.spec.ts: 13, media-probe.service.integration-spec.ts: 4, thumbnail.service.integration-spec.ts: 4, video-processing.processor.integration-spec.ts: 4) — run in `nestjs-worker`
+- **Observations:**
+  - `ffmpeg`/`ffprobe` live **only** in the worker image, by design the API image must not carry them. The three suites that shell out therefore **skip in `nestjs-api` and run for real in `nestjs-worker`**; that is where the evidence above was produced. In the API container the full run reports 35 passed / 3 skipped suites, 279 passed / 12 skipped tests.
+  - Test media is **generated** with FFmpeg (`testsrc` + `sine`) instead of using any local fixture file — nothing binary is checked in and no versioned file references a local-only input path.
+  - `ThumbnailService` writes the JPEG to `pipe:1` rather than a temp file, so nothing is left on disk however the job ends. `runProcess` collects stdout as a **Buffer** for that reason.
+  - `media-probe` treats a non-zero ffprobe exit as `InvalidMediaError` — an input the decoder cannot parse fails identically on every attempt, so it must not be retried. `classifyFailure` defaults to *recoverable* so an unrecognised error is retried rather than written off on a guess.
+  - The processor re-reads the row and returns early when the video is no longer `processing`, re-reads the source through an **internal** presigned URL (`internal: true`), and only writes `ready` after `HeadObject` confirms the thumbnail exists.
+  - `WorkerModule` is a separate composition root: it registers the entity closure (`User` → `Channel` → `Video`) that the relations need, but deliberately does **not** import `VideosModule`, so the controller, upload service and outbox relay stay out of the worker process.
+  - Dev Compose runs the worker through `ts-node` against the bind-mounted source; `Dockerfile.worker` runs the compiled `dist/worker/main.js`.
 
 ### SI-03.7 — Serve Streaming, Download, Thumbnail, and Public Metadata
 - **Status:** pending
