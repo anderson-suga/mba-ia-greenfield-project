@@ -11,6 +11,8 @@ import { VideoProcessingOutboxRelay } from './queue/video-processing-outbox.rela
 import { VideoProcessingOutboxService } from './queue/video-processing-outbox.service';
 import { S3StorageService } from './storage/s3-storage.service';
 import { STORAGE_SERVICE } from './storage/storage.service';
+import { UploadCleanupService } from './maintenance/upload-cleanup.service';
+import { ProcessingReconcilerService } from './maintenance/processing-reconciler.service';
 import { VideosController } from './videos.controller';
 import { VideosService } from './videos.service';
 
@@ -35,12 +37,16 @@ import { VideosService } from './videos.service';
     },
     VideoProcessingOutboxService,
     VideoProcessingOutboxRelay,
+    UploadCleanupService,
+    ProcessingReconcilerService,
   ],
   exports: [
     STORAGE_SERVICE,
     VideosService,
     VideoProcessingOutboxService,
     VideoProcessingOutboxRelay,
+    UploadCleanupService,
+    ProcessingReconcilerService,
   ],
 })
 export class VideosModule {}

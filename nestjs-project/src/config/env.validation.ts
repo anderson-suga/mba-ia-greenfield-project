@@ -42,4 +42,7 @@ export const envValidationSchema = Joi.object({
   QUEUE_RELAY_INTERVAL_MS: Joi.number().min(1).default(3000),
   QUEUE_RELAY_CLAIM_LEASE_MS: Joi.number().min(1).default(60000),
   QUEUE_RELAY_BATCH_SIZE: Joi.number().min(1).default(25),
+  QUEUE_MAINTENANCE_INTERVAL_MS: Joi.number().min(1).default(900000),
+  QUEUE_STALE_UPLOAD_HOURS: Joi.number().min(1).default(24),
+  QUEUE_STALLED_PROCESSING_MS: Joi.number().min(1).default(7200000),
 });

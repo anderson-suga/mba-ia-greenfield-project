@@ -25,4 +25,19 @@ export default registerAs('queue', () => ({
     10,
   ),
   relayBatchSize: parseInt(process.env.QUEUE_RELAY_BATCH_SIZE || '25', 10),
+  /** How often the cleanup and reconciler sweeps run. */
+  maintenanceIntervalMs: parseInt(
+    process.env.QUEUE_MAINTENANCE_INTERVAL_MS || '900000',
+    10,
+  ),
+  /** A draft untouched for this long is abandoned and expires to `error`. */
+  staleUploadHours: parseInt(process.env.QUEUE_STALE_UPLOAD_HOURS || '24', 10),
+  /**
+   * How long a video may sit in `processing` before it is considered stuck.
+   * Sits above the worker's lock duration, so a live job is never reconciled.
+   */
+  stalledProcessingMs: parseInt(
+    process.env.QUEUE_STALLED_PROCESSING_MS || '7200000',
+    10,
+  ),
 }));
