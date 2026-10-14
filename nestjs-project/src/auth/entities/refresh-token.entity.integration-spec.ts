@@ -5,10 +5,11 @@ import {
   cleanAllTables,
   createTestDataSource,
 } from '../../test/create-test-data-source';
+import { Video } from '../../videos/entities/video.entity';
 import { RefreshToken } from './refresh-token.entity';
 import { VerificationToken } from './verification-token.entity';
 
-const ALL_ENTITIES = [User, Channel, RefreshToken, VerificationToken];
+const ALL_ENTITIES = [User, Channel, RefreshToken, VerificationToken, Video];
 
 describe('RefreshToken entity (integration)', () => {
   let dataSource: DataSource;

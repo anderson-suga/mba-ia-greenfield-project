@@ -48,3 +48,9 @@ export class TokenReuseDetectedException extends DomainException {
     );
   }
 }
+
+export class StorageUnavailableException extends DomainException {
+  constructor() {
+    super('STORAGE_UNAVAILABLE', 503, 'Object storage unavailable');
+  }
+}
