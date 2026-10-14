@@ -1,11 +1,14 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
   Post,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -15,6 +18,7 @@ import {
   getSchemaPath,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { Public } from '../auth/decorators/public.decorator';
 import { ApiErrorEnvelope } from '../common/openapi/api-error-envelope.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { JwtPayload } from '../auth/auth.types';
@@ -25,6 +29,8 @@ import { CreateVideoUploadDto } from './dto/create-video-upload.dto';
 import {
   VideoCompleteResponseDto,
   VideoPartsResponseDto,
+  VideoPlaybackUrlResponseDto,
+  VideoPublicResponseDto,
   VideoUploadInitResponseDto,
 } from './dto/video-response.dto';
 
@@ -34,6 +40,12 @@ import {
  * global limit would reject the flow mid-transfer.
  */
 const UPLOAD_THROTTLE = { default: { limit: 60, ttl: 60_000 } };
+
+const PUBLIC_ID_PARAM = {
+  name: 'public_id',
+  description:
+    'Public identifier of the video, as returned when it was created.',
+} as const;
 
 const VIDEO_ID_PARAM = {
   name: 'id',
@@ -243,5 +255,176 @@ export class VideosController {
     @CurrentUser() user: JwtPayload,
   ): Promise<void> {
     return this.videosService.abortUpload(id, user.sub);
+  }
+
+  @Public()
+  @Get(':public_id')
+  @ApiOperation({
+    summary: 'Get public video metadata',
+    description:
+      'Returns the publicly visible fields for a video. The internal id and the storage key are never exposed.',
+  })
+  @ApiParam(PUBLIC_ID_PARAM)
+  @ApiResponse({
+    status: 200,
+    description: 'Public video metadata',
+    type: VideoPublicResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async getMetadata(
+    @Param('public_id') publicId: string,
+  ): Promise<VideoPublicResponseDto> {
+    return this.videosService.getPublicMetadata(publicId);
+  }
+
+  @Public()
+  @Get(':public_id/stream')
+  @ApiOperation({
+    summary: 'Stream a video',
+    description:
+      'Redirects (302) to a presigned storage URL. The player follows it and issues range requests directly against storage, so playback starts without transferring the whole file and the API never carries video bytes.',
+  })
+  @ApiParam(PUBLIC_ID_PARAM)
+  @ApiResponse({
+    status: 302,
+    description: 'Redirect to the presigned playback URL',
+    headers: {
+      Location: {
+        description: 'Presigned storage URL',
+        schema: { type: 'string' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Video is not ready for playback',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 503,
+    description: 'Object storage unavailable',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async stream(
+    @Param('public_id') publicId: string,
+    @Res() response: Response,
+  ): Promise<void> {
+    const url = await this.videosService.getStreamUrl(publicId);
+    response.redirect(HttpStatus.FOUND, url);
+  }
+
+  @Get(':public_id/download')
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Download a video',
+    description:
+      'Requires authentication — downloading is a user action, while watching is open to anonymous visitors. Redirects (302) to a presigned URL signed as an attachment.',
+  })
+  @ApiParam(PUBLIC_ID_PARAM)
+  @ApiResponse({
+    status: 302,
+    description: 'Redirect to the presigned download URL',
+    headers: {
+      Location: {
+        description: 'Presigned storage URL with an attachment disposition',
+        schema: { type: 'string' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Missing or invalid access token',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Video is not ready for playback',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 503,
+    description: 'Object storage unavailable',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async download(
+    @Param('public_id') publicId: string,
+    @Res() response: Response,
+  ): Promise<void> {
+    const url = await this.videosService.getDownloadUrl(publicId);
+    response.redirect(HttpStatus.FOUND, url);
+  }
+
+  @Public()
+  @Get(':public_id/thumbnail')
+  @ApiOperation({
+    summary: 'Get a video thumbnail',
+    description:
+      'Redirects (302) to a presigned URL for the generated JPEG. Returns 404 while the video has no thumbnail yet.',
+  })
+  @ApiParam(PUBLIC_ID_PARAM)
+  @ApiResponse({
+    status: 302,
+    description: 'Redirect to the presigned thumbnail URL',
+    headers: {
+      Location: {
+        description: 'Presigned storage URL',
+        schema: { type: 'string' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found, or no thumbnail yet',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async thumbnail(
+    @Param('public_id') publicId: string,
+    @Res() response: Response,
+  ): Promise<void> {
+    const url = await this.videosService.getThumbnailUrl(publicId);
+    response.redirect(HttpStatus.FOUND, url);
+  }
+
+  @Public()
+  @Get(':public_id/playback-url')
+  @ApiOperation({
+    summary: 'Refresh a playback URL',
+    description:
+      'Issues a fresh presigned playback URL, so a player can recover after its previous URL expires.',
+  })
+  @ApiParam(PUBLIC_ID_PARAM)
+  @ApiResponse({
+    status: 200,
+    description: 'Fresh presigned playback URL',
+    type: VideoPlaybackUrlResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Video is not ready for playback',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async playbackUrl(
+    @Param('public_id') publicId: string,
+  ): Promise<VideoPlaybackUrlResponseDto> {
+    return this.videosService.getPlaybackUrl(publicId);
   }
 }

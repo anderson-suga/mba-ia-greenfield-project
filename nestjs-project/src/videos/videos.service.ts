@@ -14,6 +14,7 @@ import {
   VideoForbiddenException,
   VideoNotDraftException,
   VideoNotFoundException,
+  VideoNotReadyException,
 } from '../common/exceptions/domain.exception';
 import { Video } from './entities/video.entity';
 import {
@@ -34,6 +35,7 @@ import { CreateVideoUploadDto } from './dto/create-video-upload.dto';
 import {
   VideoCompleteResponseDto,
   VideoPartsResponseDto,
+  VideoPublicResponseDto,
   VideoUploadInitResponseDto,
 } from './dto/video-response.dto';
 
@@ -230,6 +232,83 @@ export class VideosService {
         upload_id: null,
       },
     );
+  }
+
+  /** Public view of a video — never exposes the internal id or the storage key. */
+  async getPublicMetadata(publicId: string): Promise<VideoPublicResponseDto> {
+    const video = await this.findByPublicId(publicId);
+
+    return {
+      public_id: video.public_id,
+      title: video.title,
+      status: video.status,
+      duration_seconds: video.duration_seconds,
+      thumbnail_url: video.thumbnail_key
+        ? `/videos/${video.public_id}/thumbnail`
+        : null,
+      created_at: video.created_at.toISOString(),
+    };
+  }
+
+  /**
+   * Presigned playback URL. The client follows the redirect and issues `Range`
+   * requests straight against storage, so the API never carries video bytes and
+   * `206`/`416` come from the storage's own range implementation.
+   */
+  async getStreamUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    return this.storage.getPresignedReadUrl(video.storage_key);
+  }
+
+  /** Download URL, signed as an attachment so the browser saves rather than plays. */
+  async getDownloadUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+
+    return this.storage.getPresignedReadUrl(video.storage_key, {
+      downloadName: `${video.title}.mp4`,
+    });
+  }
+
+  async getThumbnailUrl(publicId: string): Promise<string> {
+    const video = await this.findByPublicId(publicId);
+
+    if (!video.thumbnail_key) {
+      // Still processing, or processing ended without a thumbnail.
+      throw new VideoNotFoundException();
+    }
+
+    return this.storage.getPresignedReadUrl(video.thumbnail_key);
+  }
+
+  /** Issues a fresh presign for a player whose previous URL expired. */
+  async getPlaybackUrl(
+    publicId: string,
+  ): Promise<{ url: string; expires_in: number }> {
+    const url = await this.getStreamUrl(publicId);
+
+    return { url, expires_in: this.storageCfg.presignExpiresIn };
+  }
+
+  private async findByPublicId(publicId: string): Promise<Video> {
+    const video = await this.videoRepository.findOneBy({
+      public_id: publicId,
+    });
+
+    if (!video) {
+      throw new VideoNotFoundException();
+    }
+
+    return video;
+  }
+
+  private async findReadyByPublicId(publicId: string): Promise<Video> {
+    const video = await this.findByPublicId(publicId);
+
+    if (video.status !== VIDEO_STATUS.READY) {
+      throw new VideoNotReadyException();
+    }
+
+    return video;
   }
 
   private async insertDraftWithUniquePublicId(

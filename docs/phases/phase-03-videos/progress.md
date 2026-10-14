@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 6/10 completed
+**SIs:** 7/10 completed
 
 ### SI-03.1 — Provision Storage, Queue, and Worker Infrastructure
 - **Status:** completed
@@ -63,9 +63,14 @@
   - Dev Compose runs the worker through `ts-node` against the bind-mounted source; `Dockerfile.worker` runs the compiled `dist/worker/main.js`.
 
 ### SI-03.7 — Serve Streaming, Download, Thumbnail, and Public Metadata
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 21 passing (videos-stream.e2e-spec.ts — of 92 E2E total)
+- **Observations:**
+  - Stream, thumbnail, metadata and `playback-url` are `@Public()`; **download is the only read endpoint without it**, which is what makes `GET /videos/:public_id/download` return 401 anonymously while anonymous visitors still watch freely.
+  - The API answers `302` and carries no media: the response body is Express's redirect notice, and range/`206`/`416` are served by storage. The e2e asserts the redirect target is a presigned URL on the **public** host, and separately that the same signing mechanism yields a URL that answers `206` to `bytes=0-1023` and `416` to an unsatisfiable range — the API container cannot resolve the public host, so the byte-level half is proven against an internal-signed URL for the same key.
+  - The metadata response is asserted **not** to contain the internal id, `storage_key`, or the object name.
+  - `thumbnail` returns `404` while no thumbnail exists, matching the catalog, rather than `409`.
+  - `playback-url` reuses the stream presign so a player can recover after its URL expires.
 
 ### SI-03.8 — Harden Cleanup, Reconciliation, and Failure Handling
 - **Status:** pending
