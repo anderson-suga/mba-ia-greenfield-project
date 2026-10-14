@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
-**Status:** in_progress
-**SIs:** 8/10 completed
+**Status:** completed
+**SIs:** 10/10 completed
 
 ### SI-03.1 — Provision Storage, Queue, and Worker Infrastructure
 - **Status:** completed
@@ -83,11 +83,19 @@
   - Both sweeps are driven explicitly in tests (`NODE_ENV=test` skips their timers) and their intervals/thresholds come from `queue.config`.
 
 ### SI-03.9 — Complete the Test Pyramid and Verify the Definition of Done
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** API `npm test -- --runInBand`: 37 suites passed + 3 skipped, 290 passed / 12 skipped. API `npm run test:e2e`: 5 suites, 92 passed. Worker `npm test -- --runInBand`: 40 suites, 302 passed. `npx tsc --noEmit` exit 0. `npm run lint` exit 0 with 0 problems.
+- **Observations:**
+  - **The 10GB upload was not executed.** `scripts/acceptance/upload-10gb.sh` is written and syntax-checked, but it needs a multi-gigabyte file and minutes of wall clock; no such run was performed here, so no latency/`docker stats` evidence is claimed. Everything the script exercises is covered by the suites below; what is missing is the scale evidence, not the mechanism.
+  - `npm run test:e2e` now carries `--runInBand` (see SI-03.5). Without it Jest parallelises the e2e files and they truncate the same tables concurrently.
+  - **Known flakiness:** `video-processing-outbox.relay.integration-spec.ts` shares Redis with the *live* worker process running in the same container, so a job it publishes can be consumed mid-assertion. It passed in isolation and on the final full run (40/40 suites), but one earlier full run reported it as a failed suite with zero failed tests. Worth a dedicated queue name for that suite.
+  - The FFmpeg-dependent suites skip in `nestjs-api` (12 skipped tests) and run in `nestjs-worker`; both containers were run to cover the whole pyramid.
 
 ### SI-03.10 — Update the AI Documentation and Close the Phase
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** no tests — `npm run openapi:export` regenerated the contract
+- **Observations:**
+  - `openapi.json` re-exported: all nine video routes are present (`POST /videos`, `/parts`, `/complete`, `/abort`, and `GET /videos/{public_id}`, `/stream`, `/download`, `/thumbnail`, `/playback-url`).
+  - Root `CLAUDE.md` gained a **Videos (Phase 03)** section (presigned upload, measured size, transactional outbox, server-assigned keys, redirect streaming, `@Public()` on reads only, dual endpoint) and the container diagram now names BullMQ/Redis instead of "Message Queue (TBD)".
+  - `nestjs-project/CLAUDE.md` now lists the new services (`minio`, `minio-init`, `redis`, `nestjs-worker`) and documents the worker: how it boots, why `WorkerModule` is a separate composition root, that FFmpeg lives only in the worker image, and that the ffmpeg-backed suites must be run in the worker container.
+  - Every file and behaviour named in either `CLAUDE.md` was checked against the code — nothing aspirational is documented.

@@ -34,6 +34,31 @@ docker compose exec nestjs-api npm run start:dev
 Services:
 - `nestjs-api` — NestJS API, port `3000`
 - `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+- `minio` — S3-compatible object storage, port `9000` (API) and `9001` (console)
+- `minio-init` — one-shot container that creates the `streamtube` bucket, then exits
+- `redis` — job queue backend for BullMQ; no host port, reachable only on the Compose network
+- `nestjs-worker` — the video worker; no ports, it only consumes jobs
+
+## The Video Worker
+
+`src/worker/main.ts` boots `WorkerModule` with `NestFactory.createApplicationContext` —
+no HTTP server, and none of the API's global guards apply. It shares the entities,
+configuration and the `StorageService` contract with the API; `WorkerModule` is a
+separate composition root and deliberately does **not** import `VideosModule`, so the
+controller, the upload service and the outbox relay stay out of the worker process.
+
+`ffmpeg` and `ffprobe` are installed **only** in `Dockerfile.worker`. Consequences:
+
+- The API image must not gain ffmpeg. If the API image grows it, the split has been
+  broken.
+- The three suites that shell out to ffmpeg (`media-probe`, `thumbnail`, and the
+  processor's integration spec) **skip in `nestjs-api`** and run for real in
+  `nestjs-worker`. Run the full suite in both containers to cover everything:
+
+```bash
+docker compose exec -T nestjs-api    npm test -- --runInBand
+docker compose exec -T nestjs-worker npm test -- --runInBand
+```
 
 All verification and teardown commands run on the **host machine**:
 
