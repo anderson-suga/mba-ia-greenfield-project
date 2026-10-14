@@ -1,6 +1,6 @@
 services:
   nestjs-api:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile.dev
     ports:
@@ -12,6 +12,29 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_started
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Video worker: same codebase, separate entrypoint (no HTTP listener), FFmpeg installed.
+  # Shares the bind mount so `npm run build` output in dist/ is visible here too.
+  nestjs-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    volumes:
+      - .:/home/node/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    # Passive shell until the worker entrypoint exists; switched to
+    # `node dist/worker/main.js` when the worker lands.
+    command: tail -f /dev/null
 
   db:
     image: postgres:17
@@ -33,4 +56,62 @@ services:
       - "1025:1025"
       - "8025:8025"
 
+  # Object storage (S3-compatible).
+  #
+  # Pinned by digest, not by tag: MinIO deleted the `minio/minio` and `minio/mc`
+  # repositories from Docker Hub (~Oct 2025), so the historical `minio/minio:RELEASE.*`
+  # images are no longer pullable and upstream publishes no readable version tags here.
+  # The digest below is the multi-arch index (linux/amd64 + linux/arm64) for
+  # MinIO RELEASE.2026-09-22T19-25-18Z, redistributed and security-patched by Chainguard.
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:2136d593beacf4461187035eca949fe49abd589d5079735025c711ca58fee0c8
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY_ID:-streamtube}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_ACCESS_KEY:-streamtube123}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
+  # Creates the bucket once MinIO is healthy. Idempotent, runs to completion and exits.
+  #
+  # Note: MinIO does not implement the S3 `AbortIncompleteMultipartUpload` lifecycle
+  # action (it rejects the rule as not matching its published schema) — it purges
+  # incomplete multipart uploads on its own, default 24h. Explicit, observable cleanup
+  # is handled by the upload-cleanup maintenance job instead.
+  minio-init:
+    image: cgr.dev/chainguard/minio@sha256:2136d593beacf4461187035eca949fe49abd589d5079735025c711ca58fee0c8
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/"$$STORAGE_BUCKET"
+        echo "bucket $$STORAGE_BUCKET ready"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY_ID:-streamtube}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_ACCESS_KEY:-streamtube123}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-streamtube}
+    restart: "no"
+
+  # Job queue backend (BullMQ).
+  redis:
+    image: redis:8.8.3-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  minio-data:
