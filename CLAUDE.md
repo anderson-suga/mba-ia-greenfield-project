@@ -45,6 +45,12 @@ The video pipeline is the one place in the codebase where the API is deliberatel
 - **Storage keys are server-assigned**, derived from the video's internal UUID
   (`videos/{id}/source.mp4`, `videos/{id}/thumbnail.jpg`). Never build a key from a
   client-supplied filename.
+- **Parts are presigned in batches, and clients must do the same.** `POST
+  /videos/:id/parts` takes an *array* of `part_numbers` for a reason: at the
+  default 8 MiB part size a 10GB file is ~1,280 parts, and the endpoint is
+  throttled at 60 req/min. Asking for one part per request stalls the upload
+  mid-transfer on a rate limit. Request in batches (100 per call is what the
+  acceptance script uses), or raise `part_size` toward its 64 MiB maximum.
 - **Streaming redirects.** `GET /videos/:public_id/stream` answers `302` to a
   presigned URL and the storage serves `Range`/`206` natively. The API implements
   neither `Content-Range` nor byte proxying.

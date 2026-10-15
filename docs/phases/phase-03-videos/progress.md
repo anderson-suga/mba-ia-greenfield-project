@@ -74,12 +74,12 @@
 
 ### SI-03.8 — Harden Cleanup, Reconciliation, and Failure Handling
 - **Status:** completed
-- **Tests:** 11 passing (failure-policy is covered inside video-processing.processor.spec.ts: 13; upload-cleanup.service.spec.ts: 5; processing-reconciler.service.spec.ts: 6)
+- **Tests:** 16 passing (upload-cleanup.service.spec.ts: 5, upload-cleanup.service.integration-spec.ts: 5, processing-reconciler.service.spec.ts: 6; failure-policy is covered inside video-processing.processor.spec.ts: 13)
 - **Observations:**
   - `failure-policy.ts` shipped with SI-03.6, since the processor needs it; the classification is exercised by the processor suite rather than a standalone one.
   - The reconciler consults **both** the database and the queue, because either alone lies: a row in `processing` may have no job, and a job may exist for a row a redelivery already finished. A video is only touched once no job in a live state (`active`/`waiting`/`delayed`) accounts for it. The stalled threshold sits above the worker's lock duration, so a job that is merely slow is never reconciled.
   - Cleanup treats a failed `abortMultipartUpload` as non-fatal: MinIO may already have purged the upload itself, and the database state is what the sweep exists to fix.
-  - **Not covered:** the plan lists `upload-cleanup.service.integration-spec.ts` (abort against real MinIO). It was not written; the abort path itself is covered against real MinIO by `storage.service.integration-spec.ts`, and the sweep's decision logic by its unit suite. Recorded as a gap rather than claimed.
+  - `upload-cleanup.service.integration-spec.ts` closes the gap this SI originally left: against real PostgreSQL and MinIO it proves the multipart upload is **genuinely gone from storage** afterwards (completing it is refused), not merely marked as aborted in the database, and that a draft still inside the retention window is untouched.
   - Both sweeps are driven explicitly in tests (`NODE_ENV=test` skips their timers) and their intervals/thresholds come from `queue.config`.
 
 ### SI-03.9 — Complete the Test Pyramid and Verify the Definition of Done
@@ -96,7 +96,7 @@
     - Download: `302` with `attachment; filename="Acceptance run.mp4"` when authenticated, **`401` without a token**. The downloaded object's **sha256 matches the source byte for byte**.
   - **The ~10.1 GiB fixture is correctly rejected.** At 10,881,539,343 bytes it exceeds the 10 GiB (10,737,418,240-byte) ceiling, and `POST /videos` answers **`413 PAYLOAD_TOO_LARGE`**. The plan assumed both fixtures would upload; that assumption was arithmetically wrong — the ceiling has to reject it, and does. The successful acceptance run is therefore the 8.78 GiB file, which is the largest decodable fixture available under the limit.
   - `npm run test:e2e` now carries `--runInBand` (see SI-03.5). Without it Jest parallelises the e2e files and they truncate the same tables concurrently.
-  - **Known flakiness:** `video-processing-outbox.relay.integration-spec.ts` shares Redis with the *live* worker process running in the same container, so a job it publishes can be consumed mid-assertion. It passed in isolation and on the final full run (40/40 suites), but one earlier full run reported it as a failed suite with zero failed tests. Worth a dedicated queue name for that suite.
+  - **Known flakiness, and its likely cause:** `video-processing-outbox.relay.integration-spec.ts` shares Redis with the *live* worker process in the same container, so a job it publishes can be consumed mid-assertion. One earlier full run reported it as a failed suite with zero failed tests. Leftover `jest` processes from interrupted runs were found still attached to the same database and queue, and were killed; that is the most plausible source of the interference. Worth giving the suite its own queue name.
   - The FFmpeg-dependent suites skip in `nestjs-api` (12 skipped tests) and run in `nestjs-worker`; both containers were run to cover the whole pyramid.
 
 ### SI-03.10 — Update the AI Documentation and Close the Phase
