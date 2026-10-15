@@ -86,7 +86,15 @@
 - **Status:** completed
 - **Tests:** API `npm test -- --runInBand`: 37 suites passed + 3 skipped, 290 passed / 12 skipped. API `npm run test:e2e`: 5 suites, 92 passed. Worker `npm test -- --runInBand`: 40 suites, 302 passed. `npx tsc --noEmit` exit 0. `npm run lint` exit 0 with 0 problems.
 - **Observations:**
-  - **The 10GB upload was not executed.** `scripts/acceptance/upload-10gb.sh` is written and syntax-checked, but it needs a multi-gigabyte file and minutes of wall clock; no such run was performed here, so no latency/`docker stats` evidence is claimed. Everything the script exercises is covered by the suites below; what is missing is the scale evidence, not the mechanism.
+  - **The large-upload acceptance was executed**, with `scripts/acceptance/upload-10gb.sh` against an 8.78 GiB file (9,207,456,591 bytes) split into 138 parts of 64 MiB, uploaded at concurrency 4. Evidence:
+    - Upload wall clock **34s** (a second run took 17s); `POST /:id/complete` returned **202**; the video reached **`ready`**.
+    - **API latency during the transfer: median 1 ms, max 4 ms** across 17 samples taken every 2s. This is the "does not stall the API" evidence — the API is not on the data path, so the numbers do not move with file size.
+    - **API memory during the transfer: 1.031–1.032 GiB, a delta of 1 MiB**, CPU below 1% after the first sample. The API never buffers the file.
+    - `duration_seconds` came back **137332** (≈38.1h), which is what the source material actually is.
+    - Thumbnail: `302` → a real **141,032-byte 1920×1080 JPEG**.
+    - Streaming: `302` → **`206 Partial Content`** with `Content-Range: bytes 0-1023/9207456591`.
+    - Download: `302` with `attachment; filename="Acceptance run.mp4"` when authenticated, **`401` without a token**. The downloaded object's **sha256 matches the source byte for byte**.
+  - **The ~10.1 GiB fixture is correctly rejected.** At 10,881,539,343 bytes it exceeds the 10 GiB (10,737,418,240-byte) ceiling, and `POST /videos` answers **`413 PAYLOAD_TOO_LARGE`**. The plan assumed both fixtures would upload; that assumption was arithmetically wrong — the ceiling has to reject it, and does. The successful acceptance run is therefore the 8.78 GiB file, which is the largest decodable fixture available under the limit.
   - `npm run test:e2e` now carries `--runInBand` (see SI-03.5). Without it Jest parallelises the e2e files and they truncate the same tables concurrently.
   - **Known flakiness:** `video-processing-outbox.relay.integration-spec.ts` shares Redis with the *live* worker process running in the same container, so a job it publishes can be consumed mid-assertion. It passed in isolation and on the final full run (40/40 suites), but one earlier full run reported it as a failed suite with zero failed tests. Worth a dedicated queue name for that suite.
   - The FFmpeg-dependent suites skip in `nestjs-api` (12 skipped tests) and run in `nestjs-worker`; both containers were run to cover the whole pyramid.

@@ -2,26 +2,39 @@
 #
 # Acceptance evidence for the "upload up to 10GB without stalling the API" requirement.
 #
-# The point of this script is not that a large file can be uploaded — it is that the
-# API stays responsive *while* it happens. The video never transits the API: the
-# client asks for presigned part URLs and PUTs the bytes straight to storage, so API
-# latency should be flat regardless of file size. This measures that.
+# The point is not that a large file can be uploaded — it is that the API stays
+# responsive *while* it happens. The video never transits the API: the client asks
+# for presigned part URLs and PUTs the bytes straight to storage, so API latency
+# should stay flat no matter how large the file is. This measures that.
 #
-# It is NOT part of `npm test`: it needs a multi-gigabyte file, minutes of wall clock,
-# and disk on both the client and the object store.
+# Not part of `npm test`: it needs a multi-gigabyte file, minutes of wall clock, and
+# disk on both the client and the object store.
 #
 # Usage:
 #   scripts/acceptance/upload-10gb.sh <path-to-large-video> [api-base-url]
 #
-# Run it from the host, where `localhost:9000` reaches MinIO. The presigned URLs the
-# API returns are signed for that host on purpose, so a run from inside a container
-# would fail with ECONNREFUSED.
+# Environment:
+#   PART_SIZE_MB      multipart part size (default 64; must be 5..64)
+#   UPLOAD_CONCURRENCY parallel part uploads (default 4)
+#   POLL_INTERVAL     seconds between status polls (default 15)
+#   MAILPIT_URL       where to read the confirmation e-mail (default http://localhost:8025)
+#
+# Run it from the HOST, where `localhost:9000` reaches MinIO. The presigned URLs the
+# API returns are signed for that host on purpose, so running this from inside a
+# container would fail with ECONNREFUSED.
 set -euo pipefail
 
 VIDEO_PATH="${1:?usage: upload-10gb.sh <path-to-large-video> [api-base-url]}"
 API="${2:-http://localhost:3000}"
-PART_SIZE=$((8 * 1024 * 1024))
+
+PART_SIZE_MB="${PART_SIZE_MB:-64}"
+PART_SIZE=$((PART_SIZE_MB * 1024 * 1024))
 CONCURRENCY="${UPLOAD_CONCURRENCY:-4}"
+# The global throttler allows 10 requests/min on non-upload routes, and the status
+# poll is one of them — 15s keeps it at 4/min.
+POLL_INTERVAL="${POLL_INTERVAL:-15}"
+PRESIGN_BATCH="${PRESIGN_BATCH:-100}"
+
 SIZE_BYTES=$(stat -c '%s' "$VIDEO_PATH")
 FILENAME=$(basename "$VIDEO_PATH")
 EMAIL="acceptance-$(date +%s)@example.com"
@@ -29,41 +42,56 @@ PASSWORD="password123"
 
 echo "File:        $VIDEO_PATH"
 echo "Size:        $SIZE_BYTES bytes ($((SIZE_BYTES / 1024 / 1024)) MiB)"
+echo "Part size:   ${PART_SIZE_MB} MiB"
 echo "API:         $API"
 echo
 
 # ---------------------------------------------------------------- helpers
 
-api_latency() {
-  curl -s -o /dev/null -w '%{time_total}' "$API/"
+confirm_account() {
+  # The confirmation token arrives by e-mail; Mailpit exposes the mailbox over
+  # HTTP, which avoids shelling into a container to read it. The search is scoped
+  # to this run's recipient — a shared mailbox still holds messages from other
+  # runs, and the body only appears in the per-message endpoint, not the summary.
+  local mailpit="${MAILPIT_URL:-http://localhost:8025}"
+  local token=""
+
+  for _ in $(seq 1 15); do
+    token=$(curl -s "$mailpit/api/v1/search?query=to:$EMAIL" | python3 -c "
+import json, re, sys, urllib.request
+try:
+    listing = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+messages = listing.get('messages') or []
+if not messages:
+    sys.exit(0)
+detail = urllib.request.urlopen(
+    '${mailpit}/api/v1/message/' + messages[0]['ID']
+).read().decode('utf-8', 'replace')
+found = re.search(r'[?&]token=([A-Za-z0-9._-]+)', detail)
+if found:
+    print(found.group(1))
+" 2>/dev/null || true)
+
+    [ -n "$token" ] && break
+    sleep 1
+  done
+
+  if [ -z "$token" ]; then
+    echo "FAILED: no confirmation e-mail arrived for $EMAIL" >&2
+    return 1
+  fi
+
+  curl -s "$API/auth/confirm-email?token=$token" >/dev/null
 }
 
 register_and_login() {
-  # The confirmation token is delivered by e-mail; Mailpit exposes it over HTTP,
-  # which is how this script confirms the account without shelling into a container.
   curl -s -X POST "$API/auth/register" \
     -H 'Content-Type: application/json' \
     -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" >/dev/null
 
-  local mailpit="${MAILPIT_URL:-http://localhost:8025}"
-  local token
-  token=$(curl -s "$mailpit/api/v1/messages" \
-    | python3 -c "
-import json,sys,re
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for m in data.get('messages', []):
-    body = json.dumps(m)
-    found = re.search(r'[?&]token=([A-Za-z0-9._-]+)', body)
-    if found:
-        print(found.group(1)); break
-" || true)
-
-  if [ -n "$token" ]; then
-    curl -s "$API/auth/confirm-email?token=$token" >/dev/null
-  fi
+  confirm_account
 
   curl -s -X POST "$API/auth/login" \
     -H 'Content-Type: application/json' \
@@ -85,20 +113,40 @@ INIT=$(curl -s -X POST "$API/videos" \
 
 VIDEO_ID=$(echo "$INIT"  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 PUBLIC_ID=$(echo "$INIT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["public_id"])')
-UPLOAD_ID=$(echo "$INIT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_id"])')
 PART_COUNT=$(echo "$INIT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["part_count"])')
 
 echo "    video_id=$VIDEO_ID public_id=$PUBLIC_ID parts=$PART_COUNT"
 
-echo "==> Uploading $PART_COUNT parts directly to storage (concurrency $CONCURRENCY)"
-PARTS_DIR=$(mktemp -d)
-trap 'rm -rf "$PARTS_DIR"' EXIT
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
 
-# Sampled in the background for the whole transfer.
-LATENCY_LOG="$PARTS_DIR/latency.log"
+echo "==> Requesting presigned URLs in batches of $PRESIGN_BATCH"
+# One request per batch, not per part: a 10GB upload at 8MiB parts is ~1,280 parts,
+# and one presign call each would trip the upload endpoints' own rate limit.
+: > "$WORK_DIR/urls.tsv"
+for (( first = 1; first <= PART_COUNT; first += PRESIGN_BATCH )); do
+  last=$(( first + PRESIGN_BATCH - 1 ))
+  [ "$last" -gt "$PART_COUNT" ] && last=$PART_COUNT
+  numbers=$(seq -s, "$first" "$last")
+
+  curl -s -X POST "$API/videos/$VIDEO_ID/parts" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"part_numbers\":[$numbers]}" \
+    | python3 -c '
+import json, sys
+for part in json.load(sys.stdin)["parts"]:
+    print("%s\t%s" % (part["part_number"], part["url"]))
+' >> "$WORK_DIR/urls.tsv"
+done
+
+echo "    received $(wc -l < "$WORK_DIR/urls.tsv") presigned URLs"
+
+echo "==> Uploading parts directly to storage (concurrency $CONCURRENCY)"
+LATENCY_LOG="$WORK_DIR/latency.log"
 (
   while true; do
-    api_latency >> "$LATENCY_LOG" 2>/dev/null || true
+    curl -s -o /dev/null -w '%{time_total}\n' "$API/" >> "$LATENCY_LOG" 2>/dev/null || true
     sleep 2
   done
 ) &
@@ -107,39 +155,39 @@ LATENCY_PID=$!
 upload_part() {
   local number="$1" start end url
   start=$(( (number - 1) * PART_SIZE ))
-  url=$(curl -s -X POST "$API/videos/$VIDEO_ID/parts" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d "{\"part_numbers\":[$number]}" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["parts"][0]["url"])')
+  end=$(( start + PART_SIZE ))
+  [ "$end" -gt "$SIZE_BYTES" ] && end=$SIZE_BYTES
 
-  end=$(( start + PART_SIZE - 1 ))
-  [ "$end" -ge "$SIZE_BYTES" ] && end=$(( SIZE_BYTES - 1 ))
+  url=$(awk -v n="$number" '$1 == n { print $2 }' "$WORK_DIR/urls.tsv")
 
   local etag
-  etag=$(dd if="$VIDEO_PATH" bs=1M skip=$(( start / 1024 / 1024 )) count=$(( PART_SIZE / 1024 / 1024 )) 2>/dev/null \
+  etag=$(dd if="$VIDEO_PATH" bs=1M skip=$(( start / 1024 / 1024 )) \
+           count=$(( (end - start) / 1024 / 1024 + 1 )) 2>/dev/null \
+    | head -c "$(( end - start ))" \
     | curl -s -X PUT --data-binary @- -D - -o /dev/null "$url" \
-    | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}')
+    | tr -d '\r' | awk 'tolower($1) == "etag:" { print $2 }')
 
-  python3 -c "import json,sys;print(json.dumps({'part_number':$number,'etag':sys.argv[1]}))" "$etag" \
-    > "$PARTS_DIR/part-$number.json"
+  python3 -c "
+import json, sys
+print(json.dumps({'part_number': $number, 'etag': sys.argv[1]}))
+" "$etag" > "$WORK_DIR/part-$number.json"
 }
 
-START_TS=$(date +%s)
 export -f upload_part
-export API VIDEO_ID TOKEN PART_SIZE SIZE_BYTES VIDEO_PATH PARTS_DIR
+export VIDEO_PATH PART_SIZE SIZE_BYTES WORK_DIR
 
+START_TS=$(date +%s)
 seq 1 "$PART_COUNT" | xargs -P "$CONCURRENCY" -I{} bash -c 'upload_part {}'
+ELAPSED=$(( $(date +%s) - START_TS ))
 
 kill "$LATENCY_PID" 2>/dev/null || true
 wait "$LATENCY_PID" 2>/dev/null || true
-ELAPSED=$(( $(date +%s) - START_TS ))
 
 echo "==> Completing the upload"
 PARTS_JSON=$(python3 -c "
 import glob, json
-parts = [json.load(open(p)) for p in sorted(glob.glob('$PARTS_DIR/part-*.json'),
-         key=lambda p: int(p.rsplit('-', 1)[1].split('.')[0]))]
+paths = glob.glob('$WORK_DIR/part-*.json')
+parts = [json.load(open(p)) for p in sorted(paths, key=lambda p: int(p.rsplit('-', 1)[1][:-5]))]
 print(json.dumps({'parts': parts}))
 ")
 
@@ -149,13 +197,12 @@ COMPLETE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/videos/$VIDEO_ID
   -d "$PARTS_JSON")
 echo "    POST /complete -> $COMPLETE"
 
-echo "==> Waiting for the worker to reach 'ready'"
+echo "==> Waiting for the worker to finish"
 STATUS=""
-for _ in $(seq 1 300); do
+for _ in $(seq 1 240); do
   STATUS=$(curl -s "$API/videos/$PUBLIC_ID" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
-  [ "$STATUS" = "ready" ] && break
-  [ "$STATUS" = "error" ] && break
-  sleep 5
+  [ "$STATUS" = "ready" ] || [ "$STATUS" = "error" ] && break
+  sleep "$POLL_INTERVAL"
 done
 echo "    status=$STATUS"
 
@@ -163,29 +210,31 @@ echo "    status=$STATUS"
 
 echo
 echo "===================== EVIDENCE ====================="
-echo "File size:            $SIZE_BYTES bytes"
+echo "File size:            $SIZE_BYTES bytes ($((SIZE_BYTES / 1024 / 1024)) MiB)"
 echo "Upload wall clock:    ${ELAPSED}s"
+echo "POST /complete:       $COMPLETE"
 echo "Final status:         $STATUS"
 
 python3 - "$LATENCY_LOG" <<'PY'
-import sys, statistics
+import statistics, sys
 try:
     samples = [float(line) for line in open(sys.argv[1]) if line.strip()]
 except FileNotFoundError:
     samples = []
 if samples:
-    print(f"API latency samples:  {len(samples)}")
-    print(f"  median:             {statistics.median(samples):.3f}s")
-    print(f"  max:                {max(samples):.3f}s")
-    print("  (flat latency during the transfer is the 'does not stall' evidence)")
+    print(f"API latency samples:  {len(samples)} (sampled every 2s during the transfer)")
+    print(f"  median:             {statistics.median(samples) * 1000:.0f} ms")
+    print(f"  max:                {max(samples) * 1000:.0f} ms")
+    print("  -> flat latency here is the 'does not stall the API' evidence")
 else:
     print("API latency samples:  none collected")
 PY
 
 echo
-echo "Confirm by hand, and record in docs/phases/phase-03-videos/progress.md:"
-echo "  - GET  $API/videos/$PUBLIC_ID            -> 200 with duration_seconds and thumbnail_url"
-echo "  - GET  $API/videos/$PUBLIC_ID/thumbnail  -> 302 to the generated JPEG"
-echo "  - curl -r 0-1023 -L $API/videos/$PUBLIC_ID/stream -> 206 Partial Content"
-echo "  - GET  $API/videos/$PUBLIC_ID/download (with the token) -> attachment"
-echo "  - docker stats nestjs-project-nestjs-api-1 (memory stays flat during the upload)"
+echo "Confirm by hand:"
+echo "  GET   $API/videos/$PUBLIC_ID/thumbnail           -> 302 to the generated JPEG"
+echo "  curl -r 0-1023 -L $API/videos/$PUBLIC_ID/stream  -> 206 Partial Content"
+echo "  GET   $API/videos/$PUBLIC_ID/download (Bearer)   -> 302 attachment"
+echo "  docker stats --no-stream nestjs-project-nestjs-api-1"
+echo
+echo "Record the output in docs/phases/phase-03-videos/progress.md."
