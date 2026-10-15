@@ -1,0 +1,14 @@
+# Video worker image: same Node base as the API plus FFmpeg/ffprobe.
+#
+# FFmpeg is installed here and NOT in Dockerfile.dev on purpose — only the worker
+# shells out to it, and keeping it out of the API image keeps that image small and
+# its attack surface limited to what the request path actually uses.
+FROM node:25.6.0-slim
+
+RUN apt update && apt install -y procps curl ffmpeg
+
+WORKDIR /home/node/app
+
+USER node
+
+CMD [ "node", "dist/worker/main.js" ]

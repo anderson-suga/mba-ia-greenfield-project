@@ -7,9 +7,14 @@ const PG_UNIQUE_VIOLATION = '23505';
 const NICKNAME_COLUMN = 'nickname';
 const MAX_RETRIES = 5;
 
+interface PgErrorProperties {
+  code?: unknown;
+  detail?: unknown;
+}
+
 function isPgUniqueViolationOnColumn(err: unknown, column: string): boolean {
   if (!(err instanceof QueryFailedError)) return false;
-  const e = err as any;
+  const e = err as PgErrorProperties;
   return (
     e.code === PG_UNIQUE_VIOLATION &&
     typeof e.detail === 'string' &&
@@ -57,6 +62,17 @@ export class ChannelsService {
       throw new Error(
         'Nickname conflict could not be resolved after max retries',
       );
+    });
+  }
+
+  /**
+   * Resolves the channel owned by a user, which is how every other module
+   * answers "which channel does this request act as". Returns `null` when the
+   * user has no channel — callers decide whether that is forbidden or a bug.
+   */
+  async findByUserId(userId: string): Promise<Channel | null> {
+    return this.dataSource.getRepository(Channel).findOneBy({
+      user_id: userId,
     });
   }
 }

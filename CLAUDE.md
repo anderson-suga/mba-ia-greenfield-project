@@ -10,7 +10,7 @@ More info in the project overview: [docs/project-plan.md](docs/project-plan.md)
 
 This is a monorepo with two main areas:
 
-- `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Contains modules for users, channels, videos, comments, etc.
+- `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Modules: `auth/`, `users/`, `channels/`, `videos/`, `mail/`, plus `common/`, `config/`, `database/`, `swagger/`. Also hosts the video worker entrypoint at `src/worker/`.
 - `docs/` — Project documentation, architecture diagrams, and planning.
 - `next-frontend/` (Next.js) — not yet initialized
 
@@ -23,8 +23,47 @@ See `docs/diagrams/software-arch.mermaid` for the full diagram. Key containers:
 - **Video Worker** (FFmpeg) → consumes jobs from queue, processes videos, updates DB and storage
 - **Database** (PostgreSQL) → users, channels, videos, comments, likes
 - **Object Storage** (S3/MinIO) → video files and thumbnails
-- **Message Queue** (TBD) → video processing job queue
+- **Message Queue** (BullMQ on Redis) → video processing job queue
 - **Email Service** (SMTP) → account confirmation and password recovery
+
+## Videos (Phase 03)
+
+The video pipeline is the one place in the codebase where the API is deliberately
+**not** in the data path, and the rules below follow from that.
+
+- **Upload is presigned multipart.** `POST /videos` pre-registers a `draft` and opens
+  a multipart upload; the client receives presigned part URLs and PUTs the bytes
+  **straight to storage**. A video file never passes through the API — passing it
+  through would pin a request for the whole transfer and is the failure this design
+  exists to avoid.
+- **The real size is measured, never trusted.** `POST /videos/:id/complete` calls
+  `HeadObject` and applies the 10GB limit to the object that actually exists.
+- **Enqueue goes through a transactional outbox.** The `draft → processing` update
+  and the outbox row are written in one transaction, and the relay publishes
+  afterwards with `jobId = event_id`. Redis is a delivery detail, not a participant
+  in the commit — an outage costs latency, never a job.
+- **Storage keys are server-assigned**, derived from the video's internal UUID
+  (`videos/{id}/source.mp4`, `videos/{id}/thumbnail.jpg`). Never build a key from a
+  client-supplied filename.
+- **Parts are presigned in batches, and clients must do the same.** `POST
+  /videos/:id/parts` takes an *array* of `part_numbers` for a reason: at the
+  default 8 MiB part size a 10GB file is ~1,280 parts, and the endpoint is
+  throttled at 60 req/min. Asking for one part per request stalls the upload
+  mid-transfer on a rate limit. Request in batches (100 per call is what the
+  acceptance script uses), or raise `part_size` toward its 64 MiB maximum.
+- **Streaming redirects.** `GET /videos/:public_id/stream` answers `302` to a
+  presigned URL and the storage serves `Range`/`206` natively. The API implements
+  neither `Content-Range` nor byte proxying.
+- **`@Public()` is for read endpoints only.** Metadata, stream and thumbnail are
+  public; download requires a JWT; every upload mutation is authenticated and
+  ownership-checked against the caller's channel.
+- **Two storage endpoints, on purpose.** `STORAGE_ENDPOINT` (`http://minio:9000`) is
+  used by the API and the worker; `STORAGE_PUBLIC_ENDPOINT` (`http://localhost:9000`)
+  is only ever embedded in URLs handed to a browser. A presigned URL carries the host
+  of whoever signed it, so one value cannot serve both.
+
+The lifecycle is `draft → processing → ready | error`, persisted in `videos.status`
+and enforced by a check constraint.
 
 ## Docker Networking
 

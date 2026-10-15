@@ -9,6 +9,12 @@ import {
   TokenReuseDetectedException,
 } from '../exceptions/domain.exception';
 
+interface ErrorResponseBody {
+  statusCode: number;
+  error: string;
+  message: unknown;
+}
+
 describe('DomainExceptionFilter', () => {
   let filter: DomainExceptionFilter;
   let mockJson: jest.Mock;
@@ -27,8 +33,8 @@ describe('DomainExceptionFilter', () => {
       }),
       getArgs: () => [],
       getArgByIndex: () => null,
-      switchToRpc: () => ({}) as any,
-      switchToWs: () => ({}) as any,
+      switchToRpc: () => ({}),
+      switchToWs: () => ({}),
       getType: () => 'http',
     } as unknown as ArgumentsHost;
   });
@@ -48,54 +54,59 @@ describe('DomainExceptionFilter', () => {
     filter.catch(new InvalidCredentialsException(), mockHost);
 
     expect(mockStatus).toHaveBeenCalledWith(401);
-    expect(mockJson).toHaveBeenCalledWith({
+    const expected: ErrorResponseBody = {
       statusCode: 401,
       error: 'INVALID_CREDENTIALS',
       message: expect.any(String),
-    });
+    };
+    expect(mockJson).toHaveBeenCalledWith(expected);
   });
 
   it('maps EmailNotConfirmedException to 403 with EMAIL_NOT_CONFIRMED', () => {
     filter.catch(new EmailNotConfirmedException(), mockHost);
 
     expect(mockStatus).toHaveBeenCalledWith(403);
-    expect(mockJson).toHaveBeenCalledWith({
+    const expected: ErrorResponseBody = {
       statusCode: 403,
       error: 'EMAIL_NOT_CONFIRMED',
       message: expect.any(String),
-    });
+    };
+    expect(mockJson).toHaveBeenCalledWith(expected);
   });
 
   it('maps InvalidTokenException to 401 with INVALID_TOKEN', () => {
     filter.catch(new InvalidTokenException(), mockHost);
 
     expect(mockStatus).toHaveBeenCalledWith(401);
-    expect(mockJson).toHaveBeenCalledWith({
+    const expected: ErrorResponseBody = {
       statusCode: 401,
       error: 'INVALID_TOKEN',
       message: expect.any(String),
-    });
+    };
+    expect(mockJson).toHaveBeenCalledWith(expected);
   });
 
   it('maps TokenExpiredException to 401 with TOKEN_EXPIRED', () => {
     filter.catch(new TokenExpiredException(), mockHost);
 
     expect(mockStatus).toHaveBeenCalledWith(401);
-    expect(mockJson).toHaveBeenCalledWith({
+    const expected: ErrorResponseBody = {
       statusCode: 401,
       error: 'TOKEN_EXPIRED',
       message: expect.any(String),
-    });
+    };
+    expect(mockJson).toHaveBeenCalledWith(expected);
   });
 
   it('maps TokenReuseDetectedException to 401 with TOKEN_REUSE_DETECTED', () => {
     filter.catch(new TokenReuseDetectedException(), mockHost);
 
     expect(mockStatus).toHaveBeenCalledWith(401);
-    expect(mockJson).toHaveBeenCalledWith({
+    const expected: ErrorResponseBody = {
       statusCode: 401,
       error: 'TOKEN_REUSE_DETECTED',
       message: expect.any(String),
-    });
+    };
+    expect(mockJson).toHaveBeenCalledWith(expected);
   });
 });

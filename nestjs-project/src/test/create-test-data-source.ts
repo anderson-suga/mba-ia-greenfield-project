@@ -5,8 +5,10 @@ interface TestDataSourceOptions {
   migrations?: (new () => MigrationInterface)[];
 }
 
+type EntityClass = new () => unknown;
+
 export function createTestDataSource(
-  entities: (Function | string | EntitySchema<any>)[],
+  entities: (EntityClass | string | EntitySchema<any>)[],
   options: TestDataSourceOptions = {},
 ): DataSource {
   const { synchronize = true, migrations } = options;
@@ -23,7 +25,16 @@ export function createTestDataSource(
   });
 }
 
+/**
+ * Wipes every table the suites touch.
+ *
+ * Order matters: it follows the foreign keys, so children go before parents.
+ * `videos` references `channels`, so it must be cleared first — otherwise the
+ * `DELETE FROM "channels"` is rejected by the `ON DELETE RESTRICT` constraint.
+ */
 export async function cleanAllTables(dataSource: DataSource): Promise<void> {
+  await dataSource.query('DELETE FROM "video_processing_outbox"');
+  await dataSource.query('DELETE FROM "videos"');
   await dataSource.query('DELETE FROM "refresh_tokens"');
   await dataSource.query('DELETE FROM "verification_tokens"');
   await dataSource.query('DELETE FROM "channels"');
